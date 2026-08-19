@@ -23,6 +23,8 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	// JWT — Nimbus JOSE+JWT (no Jackson dependency; used by Spring Security internally)
+	implementation 'com.nimbusds:nimbus-jose-jwt:10.0.2'
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
 	runtimeOnly 'com.mysql:mysql-connector-j'

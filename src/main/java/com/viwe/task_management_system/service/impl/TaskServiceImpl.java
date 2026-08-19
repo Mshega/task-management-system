@@ -134,9 +134,20 @@ public class TaskServiceImpl implements TaskService {
     public TaskResponse completeTask(Long taskId, Long userId) {
         Task task = findOwnedTask(taskId, userId);
 
-        assertValidTransition(task.getStatus(), TaskStatus.DONE);
-        task.setStatus(TaskStatus.DONE);
+        // completeTask has its own explicit rule: only TODO and IN_PROGRESS
+        // can be marked as done. DONE is already complete (idempotent reject
+        // with a clear message), CANCELLED requires explicit reopen first.
+        if (task.getStatus() == TaskStatus.DONE) {
+            throw new BusinessRuleViolationException(
+                    "Cannot transition task from DONE to DONE: task is already completed");
+        }
+        if (task.getStatus() == TaskStatus.CANCELLED) {
+            throw new BusinessRuleViolationException(
+                    "Cannot transition task from CANCELLED to DONE: " +
+                    "reopen the task first by setting its status to TODO");
+        }
 
+        task.setStatus(TaskStatus.DONE);
         Task saved = taskRepository.save(task);
         return TaskResponse.from(saved);
     }
