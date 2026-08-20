@@ -27,29 +27,37 @@ import java.util.Date;
  * internally for its OAuth2 resource server support.
  *
  * <p>The signing secret is read from {@link JwtProperties} which binds
- * to environment variables, never from hard-coded values in source code.
+ * to the {@code APP_JWT_SECRET} environment variable. It is never stored
+ * in source control.
  *
  * <p>Security guarantees:
  * <ul>
  *   <li>Tokens are signed with HS256 (HMAC-SHA256).</li>
  *   <li>The secret is never logged or returned in responses.</li>
- *   <li>Expired, tampered, and unparseable tokens are rejected silently
- *       (returning {@code false}) — the caller decides the HTTP response.</li>
+ *   <li>Expired, tampered, and unparseable tokens are rejected
+ *       (returning {@code false}) — the filter maps that to HTTP 401.</li>
  * </ul>
  */
 @Service
 public class JwtService {
 
     private static final Logger log = LoggerFactory.getLogger(JwtService.class);
+    private static final int MIN_SECRET_BYTES = 32;
 
     private final JwtProperties jwtProperties;
 
     public JwtService(JwtProperties jwtProperties) {
         this.jwtProperties = jwtProperties;
+        byte[] secret = decodeSecret();
+        if (secret.length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException(
+                    "JWT secret must be at least " + MIN_SECRET_BYTES
+                            + " bytes after Base64 decoding");
+        }
     }
 
     /**
-     * Generates a signed JWT for the given user.
+     * Generates a signed JWT for the given user using the configured lifetime.
      *
      * <p>Claims included:
      * <ul>
@@ -63,31 +71,27 @@ public class JwtService {
      * @throws RuntimeException if token creation fails (e.g. invalid secret)
      */
     public String generateToken(UserDetails userDetails) {
-        try {
-            Instant now = Instant.now();
-            Instant expiry = now.plusMillis(jwtProperties.getExpirationMs());
-
-            JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                    .subject(userDetails.getUsername())
-                    .issueTime(Date.from(now))
-                    .expirationTime(Date.from(expiry))
-                    .build();
-
-            JWSHeader header = new JWSHeader(JWSAlgorithm.HS256);
-            SignedJWT signedJWT = new SignedJWT(header, claims);
-
-            JWSSigner signer = new MACSigner(decodeSecret());
-            signedJWT.sign(signer);
-
-            return signedJWT.serialize();
-
-        } catch (JOSEException e) {
-            throw new RuntimeException("Failed to generate JWT token", e);
-        }
+        Instant now = Instant.now();
+        Instant expiry = now.plusMillis(jwtProperties.getExpirationMs());
+        return generateToken(userDetails, now, expiry);
     }
 
     /**
-     * Extracts the subject (email) from a valid JWT.
+     * Generates a signed JWT with an explicit expiry. Used by tests to produce
+     * expired tokens without waiting for the configured lifetime.
+     *
+     * @param userDetails the authenticated user
+     * @param expiry      token expiration instant
+     * @return a compact, URL-safe signed JWT string
+     */
+    public String generateToken(UserDetails userDetails, Instant expiry) {
+        return generateToken(userDetails, Instant.now(), expiry);
+    }
+
+    /**
+     * Extracts the subject (email) from a JWT without validating the signature.
+     * Callers that authenticate a request must also call
+     * {@link #isTokenValid(String, UserDetails)}.
      *
      * @param token the compact JWT string
      * @return the email address stored in the {@code sub} claim
@@ -127,20 +131,39 @@ public class JwtService {
 
             JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
 
-            if (claims.getExpirationTime().before(new Date())) {
+            if (claims.getExpirationTime() == null
+                    || claims.getExpirationTime().before(new Date())) {
                 return false;
             }
 
             return claims.getSubject().equals(userDetails.getUsername());
 
         } catch (ParseException | JOSEException e) {
-            // Log at debug — invalid tokens are a normal occurrence
             log.debug("JWT validation failed: {}", e.getMessage());
             return false;
         }
     }
 
-    // ── Private ───────────────────────────────────────────────────────────────
+    private String generateToken(UserDetails userDetails, Instant issuedAt, Instant expiry) {
+        try {
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .subject(userDetails.getUsername())
+                    .issueTime(Date.from(issuedAt))
+                    .expirationTime(Date.from(expiry))
+                    .build();
+
+            JWSHeader header = new JWSHeader(JWSAlgorithm.HS256);
+            SignedJWT signedJWT = new SignedJWT(header, claims);
+
+            JWSSigner signer = new MACSigner(decodeSecret());
+            signedJWT.sign(signer);
+
+            return signedJWT.serialize();
+
+        } catch (JOSEException e) {
+            throw new RuntimeException("Failed to generate JWT token", e);
+        }
+    }
 
     /**
      * Decodes the Base64-encoded secret from properties into raw bytes.
@@ -148,6 +171,11 @@ public class JwtService {
      * avoid keeping sensitive material in heap memory longer than necessary.
      */
     private byte[] decodeSecret() {
-        return Base64.getDecoder().decode(jwtProperties.getSecret());
+        String secret = jwtProperties.getSecret();
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException(
+                    "JWT secret is not configured. Set the APP_JWT_SECRET environment variable.");
+        }
+        return Base64.getDecoder().decode(secret);
     }
 }

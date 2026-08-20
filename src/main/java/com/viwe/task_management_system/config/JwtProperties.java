@@ -13,9 +13,8 @@ import org.springframework.stereotype.Component;
  * </ul>
  *
  * <p>The secret is never logged, printed, or returned in any response.
- * The default secret in {@code application.properties} is a development
- * placeholder that must be overridden in staging and production via the
- * environment variable.
+ * There is no default in {@code application.properties} — the application
+ * will not start unless {@code APP_JWT_SECRET} is set.
  */
 @Component
 @ConfigurationProperties(prefix = "app.jwt")

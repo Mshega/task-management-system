@@ -3,12 +3,14 @@ package com.viwe.task_management_system.service;
 import com.viwe.task_management_system.dto.response.UserResponse;
 import com.viwe.task_management_system.entity.User;
 
+// AuthService is referenced from the type javadoc only.
+
 /**
  * Business operations for user management.
  *
- * <p>Authentication (register/login) will be handled by a dedicated
- * AuthService in a later step. This service covers profile operations
- * available to an already-authenticated user.
+ * <p>Authentication (register/login) is handled by {@link AuthService}.
+ * This service covers profile operations available to an already-authenticated
+ * user, and implements Spring Security's user lookup by email.
  */
 public interface UserService {
 

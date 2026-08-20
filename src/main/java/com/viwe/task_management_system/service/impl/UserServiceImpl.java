@@ -16,8 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link UserDetailsService}.
  *
  * <p>Implementing {@link UserDetailsService} here means the JWT authentication
- * filter (added in a later step) can load users by email directly from this
- * service without any additional wiring.
+ * filter can load users by email directly from this service.
  *
  * <p>The {@code User} entity already implements {@code UserDetails}, so
  * {@link #loadUserByUsername(String)} simply delegates to

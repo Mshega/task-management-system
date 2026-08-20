@@ -40,12 +40,6 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>The user's ID is always extracted from this injected principal — never
  * from a URL path variable or request body parameter. This prevents any
  * possibility of a client supplying a different user's ID to access their data.
- *
- * <h2>Current state (pre-JWT)</h2>
- * <p>{@code /api/tasks/**} requires authentication per {@code SecurityConfig}.
- * Until the JWT filter is implemented, requests to these endpoints will receive
- * 401/403 from Spring Security before they reach this controller. The controller
- * itself is complete and production-ready.
  */
 @RestController
 @RequestMapping("/api/tasks")

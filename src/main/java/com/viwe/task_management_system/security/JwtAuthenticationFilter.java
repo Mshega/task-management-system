@@ -8,10 +8,12 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.lang.NonNull;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -19,23 +21,25 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * Intercepts every request and validates the Bearer JWT token in the
+ * Intercepts every request and authenticates a Bearer JWT from the
  * {@code Authorization} header.
  *
  * <p>If a valid token is present, the filter:
  * <ol>
  *   <li>Extracts the user's email from the token subject claim.</li>
  *   <li>Loads the {@link UserDetails} from the database.</li>
- *   <li>Validates the token against those details.</li>
+ *   <li>Validates signature, expiry, and subject.</li>
  *   <li>Sets the authentication in the {@link SecurityContextHolder}.</li>
  * </ol>
  *
- * <p>If the token is absent or invalid, the filter does nothing — the
- * request proceeds unauthenticated, and Spring Security's authorisation
- * layer will reject it with 401/403 if the endpoint requires authentication.
+ * <p>If the header is absent, the filter continues unauthenticated and
+ * Spring Security rejects protected endpoints with 401.
  *
- * <p>This filter runs exactly once per request ({@link OncePerRequestFilter})
- * and never throws an exception that would expose token details to the client.
+ * <p>If a Bearer token is present but invalid or expired, the filter
+ * immediately returns 401 and does not continue the chain.
+ *
+ * <p>This filter is registered only on the Spring Security filter chain
+ * (servlet registration is disabled) so it runs exactly once per request.
  */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -43,13 +47,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
+    private static final String INVALID_TOKEN_MESSAGE = "Invalid or expired authentication token";
 
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
+    private final JwtAuthenticationEntryPoint authenticationEntryPoint;
 
-    public JwtAuthenticationFilter(JwtService jwtService, UserDetailsService userDetailsService) {
+    public JwtAuthenticationFilter(JwtService jwtService,
+                                   UserDetailsService userDetailsService,
+                                   JwtAuthenticationEntryPoint authenticationEntryPoint) {
         this.jwtService = jwtService;
         this.userDetailsService = userDetailsService;
+        this.authenticationEntryPoint = authenticationEntryPoint;
     }
 
     @Override
@@ -60,40 +69,61 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String authHeader = request.getHeader(AUTHORIZATION_HEADER);
 
-        // No Authorization header or not a Bearer token — skip JWT processing
         if (authHeader == null || !authHeader.startsWith(BEARER_PREFIX)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        String jwt = authHeader.substring(BEARER_PREFIX.length());
+        String jwt = authHeader.substring(BEARER_PREFIX.length()).strip();
+        if (jwt.isEmpty()) {
+            reject(request, response);
+            return;
+        }
 
         try {
             String email = jwtService.extractEmail(jwt);
 
-            // Only proceed if email was extracted and no authentication is set yet
-            if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            if (email == null || email.isBlank()) {
+                reject(request, response);
+                return;
+            }
+
+            if (SecurityContextHolder.getContext().getAuthentication() == null) {
                 UserDetails userDetails = userDetailsService.loadUserByUsername(email);
 
-                if (jwtService.isTokenValid(jwt, userDetails)) {
-                    UsernamePasswordAuthenticationToken authToken =
-                            new UsernamePasswordAuthenticationToken(
-                                    userDetails,
-                                    null,
-                                    userDetails.getAuthorities());
-
-                    authToken.setDetails(
-                            new WebAuthenticationDetailsSource().buildDetails(request));
-
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
+                if (!jwtService.isTokenValid(jwt, userDetails)) {
+                    reject(request, response);
+                    return;
                 }
+
+                UsernamePasswordAuthenticationToken authToken =
+                        new UsernamePasswordAuthenticationToken(
+                                userDetails,
+                                null,
+                                userDetails.getAuthorities());
+
+                authToken.setDetails(
+                        new WebAuthenticationDetailsSource().buildDetails(request));
+
+                SecurityContextHolder.getContext().setAuthentication(authToken);
             }
+        } catch (UsernameNotFoundException e) {
+            log.debug("JWT subject does not match a user for request to {}", request.getRequestURI());
+            reject(request, response);
+            return;
         } catch (Exception e) {
-            // Never propagate token processing errors — log at debug and continue
             log.debug("JWT processing failed for request to {}: {}",
                     request.getRequestURI(), e.getMessage());
+            reject(request, response);
+            return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private void reject(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        SecurityContextHolder.clearContext();
+        authenticationEntryPoint.commence(
+                request, response, new BadCredentialsException(INVALID_TOKEN_MESSAGE));
     }
 }
