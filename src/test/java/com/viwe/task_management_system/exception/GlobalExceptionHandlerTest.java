@@ -27,11 +27,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * application controller.
  */
 @WebMvcTest(controllers = TestExceptionController.class)
-@Import({GlobalExceptionHandler.class, SecurityConfig.class})
+@Import({GlobalExceptionHandler.class, SecurityConfig.class,
+         com.viwe.task_management_system.security.JwtAuthenticationEntryPoint.class})
 class GlobalExceptionHandlerTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    // ── Required beans for SecurityConfig ────────────────────────────────────
+    // SecurityConfig needs JwtService and UserDetailsService. The real
+    // JwtAuthenticationFilter and JwtAuthenticationEntryPoint are used — this
+    // allows unauthenticated requests to produce genuine 401 responses.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private org.springframework.security.core.userdetails.UserDetailsService userDetailsService;
+
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private com.viwe.task_management_system.service.JwtService jwtService;
 
     // ── 400 Validation ───────────────────────────────────────────────────────
 

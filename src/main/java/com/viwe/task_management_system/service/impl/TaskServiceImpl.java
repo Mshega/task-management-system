@@ -1,6 +1,8 @@
 package com.viwe.task_management_system.service.impl;
 
+import com.viwe.task_management_system.config.TaskPageConfig;
 import com.viwe.task_management_system.dto.request.CreateTaskRequest;
+import com.viwe.task_management_system.dto.request.TaskFilterRequest;
 import com.viwe.task_management_system.dto.request.UpdateTaskRequest;
 import com.viwe.task_management_system.dto.response.TaskResponse;
 import com.viwe.task_management_system.entity.Task;
@@ -13,6 +15,7 @@ import com.viwe.task_management_system.repository.TaskRepository;
 import com.viwe.task_management_system.repository.UserRepository;
 import com.viwe.task_management_system.service.TaskService;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,14 +23,25 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Implementation of {@link TaskService}.
  *
- * <p>All methods enforce task ownership by passing the authenticated user's ID
- * to the repository. A task that does not exist OR belongs to a different user
- * always produces a {@link ResourceNotFoundException} — this intentional
- * ambiguity prevents clients from probing the existence of other users' tasks.
+ * <h2>Filtering and pagination</h2>
+ * <p>All list queries go through
+ * {@link TaskRepository#findAllByUserIdWithFilters}, a single JPQL query that
+ * accepts optional status, priority, title-substring, and due-date bounds.
+ * Null parameters are silently ignored, so the query degrades gracefully from
+ * "fully filtered" to "all tasks" without branching logic in the service.
  *
- * <p>Status transition rules are validated before any update is persisted.
- * See {@link #assertValidTransition(TaskStatus, TaskStatus)} for the permitted
- * transitions.
+ * <h2>Page-size cap</h2>
+ * <p>Before delegating to the repository the service replaces the client's
+ * requested page size with {@code min(requested, maxPageSize)} so that no
+ * single call can force a table scan of unbounded size. The cap is read from
+ * {@link TaskPageConfig} and defaults to 100.
+ *
+ * <h2>Ownership</h2>
+ * <p>Every read and mutation path enforces ownership. {@link #findOwnedTask}
+ * is the single point of enforcement for get / update / complete.
+ * {@link #deleteTask} uses an existence check to avoid loading the entity.
+ * Neither path exposes whether a missing result is "not found" or
+ * "wrong owner" — both produce a 404 to prevent task-ID enumeration.
  */
 @Service
 @Transactional
@@ -35,10 +49,14 @@ public class TaskServiceImpl implements TaskService {
 
     private final TaskRepository taskRepository;
     private final UserRepository userRepository;
+    private final TaskPageConfig taskPageConfig;
 
-    public TaskServiceImpl(TaskRepository taskRepository, UserRepository userRepository) {
+    public TaskServiceImpl(TaskRepository taskRepository,
+                           UserRepository userRepository,
+                           TaskPageConfig taskPageConfig) {
         this.taskRepository = taskRepository;
         this.userRepository = userRepository;
+        this.taskPageConfig = taskPageConfig;
     }
 
     // ── Create ───────────────────────────────────────────────────────────────
@@ -61,32 +79,31 @@ public class TaskServiceImpl implements TaskService {
         return TaskResponse.from(saved);
     }
 
-    // ── Read ─────────────────────────────────────────────────────────────────
+    // ── Read (list) ──────────────────────────────────────────────────────────
 
     @Override
     @Transactional(readOnly = true)
-    public Page<TaskResponse> getUserTasks(Long userId, TaskStatus status,
-                                           TaskPriority priority, Pageable pageable) {
-        if (status != null) {
-            return taskRepository
-                    .findAllByUserIdAndStatus(userId, status, pageable)
-                    .map(TaskResponse::from);
-        }
-        if (priority != null) {
-            return taskRepository
-                    .findAllByUserIdAndPriority(userId, priority, pageable)
-                    .map(TaskResponse::from);
-        }
-        return taskRepository
-                .findAllByUserId(userId, pageable)
-                .map(TaskResponse::from);
+    public Page<TaskResponse> getUserTasks(Long userId,
+                                           TaskFilterRequest filter,
+                                           Pageable pageable) {
+        Pageable capped = capPageSize(pageable);
+        return taskRepository.findAllByUserIdWithFilters(
+                userId,
+                filter.status(),
+                filter.priority(),
+                filter.title(),
+                filter.dueOnOrBefore(),
+                filter.dueOnOrAfter(),
+                capped
+        ).map(TaskResponse::from);
     }
+
+    // ── Read (single) ────────────────────────────────────────────────────────
 
     @Override
     @Transactional(readOnly = true)
     public TaskResponse getTaskById(Long taskId, Long userId) {
-        Task task = findOwnedTask(taskId, userId);
-        return TaskResponse.from(task);
+        return TaskResponse.from(findOwnedTask(taskId, userId));
     }
 
     // ── Update ───────────────────────────────────────────────────────────────
@@ -95,33 +112,22 @@ public class TaskServiceImpl implements TaskService {
     public TaskResponse updateTask(Long taskId, UpdateTaskRequest request, Long userId) {
         Task task = findOwnedTask(taskId, userId);
 
-        if (request.title() != null) {
-            task.setTitle(request.title());
-        }
-        if (request.description() != null) {
-            task.setDescription(request.description());
-        }
+        if (request.title() != null)       task.setTitle(request.title());
+        if (request.description() != null) task.setDescription(request.description());
         if (request.status() != null) {
             assertValidTransition(task.getStatus(), request.status());
             task.setStatus(request.status());
         }
-        if (request.priority() != null) {
-            task.setPriority(request.priority());
-        }
-        if (request.dueDate() != null) {
-            task.setDueDate(request.dueDate());
-        }
+        if (request.priority() != null)    task.setPriority(request.priority());
+        if (request.dueDate() != null)     task.setDueDate(request.dueDate());
 
-        Task saved = taskRepository.save(task);
-        return TaskResponse.from(saved);
+        return TaskResponse.from(taskRepository.save(task));
     }
 
     // ── Delete ───────────────────────────────────────────────────────────────
 
     @Override
     public void deleteTask(Long taskId, Long userId) {
-        // Use existence check to avoid loading the full entity when we only need
-        // to verify ownership before deleting.
         if (!taskRepository.existsByIdAndUserId(taskId, userId)) {
             throw new ResourceNotFoundException("Task", taskId);
         }
@@ -134,9 +140,6 @@ public class TaskServiceImpl implements TaskService {
     public TaskResponse completeTask(Long taskId, Long userId) {
         Task task = findOwnedTask(taskId, userId);
 
-        // completeTask has its own explicit rule: only TODO and IN_PROGRESS
-        // can be marked as done. DONE is already complete (idempotent reject
-        // with a clear message), CANCELLED requires explicit reopen first.
         if (task.getStatus() == TaskStatus.DONE) {
             throw new BusinessRuleViolationException(
                     "Cannot transition task from DONE to DONE: task is already completed");
@@ -148,20 +151,35 @@ public class TaskServiceImpl implements TaskService {
         }
 
         task.setStatus(TaskStatus.DONE);
-        Task saved = taskRepository.save(task);
-        return TaskResponse.from(saved);
+        return TaskResponse.from(taskRepository.save(task));
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /**
-     * Loads a task by ID and verifies it belongs to the given user.
-     * Throws {@link ResourceNotFoundException} if either condition is not met,
-     * without distinguishing between "not found" and "wrong owner".
+     * Loads a task by ID and verifies it belongs to {@code userId}.
+     * Throws {@link ResourceNotFoundException} for both "not found" and "wrong
+     * owner" to prevent callers from enumerating tasks owned by other users.
      */
     private Task findOwnedTask(Long taskId, Long userId) {
         return taskRepository.findByIdAndUserId(taskId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", taskId));
+    }
+
+    /**
+     * Returns a {@link Pageable} whose page size is capped at
+     * {@link TaskPageConfig#getMaxPageSize()}. All other attributes
+     * (page number, sort) are preserved unchanged.
+     *
+     * <p>This prevents a client from requesting an arbitrarily large page and
+     * forcing a full-table scan.
+     */
+    private Pageable capPageSize(Pageable pageable) {
+        int max = taskPageConfig.getMaxPageSize();
+        if (pageable.getPageSize() <= max) {
+            return pageable;
+        }
+        return PageRequest.of(pageable.getPageNumber(), max, pageable.getSort());
     }
 
     /**
@@ -175,17 +193,10 @@ public class TaskServiceImpl implements TaskService {
      *   CANCELLED    → TODO  (reopen)
      * </pre>
      *
-     * <p>Transitioning to the same status is always a no-op and is allowed
-     * to avoid unnecessary errors on idempotent updates.
-     *
-     * @param current   the task's current status
-     * @param requested the status the client wants to set
-     * @throws BusinessRuleViolationException if the transition is not permitted
+     * <p>Same-status updates are always a no-op and never throw.
      */
     private void assertValidTransition(TaskStatus current, TaskStatus requested) {
-        if (current == requested) {
-            return; // no-op — idempotent, always valid
-        }
+        if (current == requested) return;
 
         boolean valid = switch (current) {
             case TODO        -> requested == TaskStatus.IN_PROGRESS

@@ -32,7 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * the right HTTP status codes and response shapes.
  */
 @WebMvcTest(controllers = AuthController.class)
-@Import({GlobalExceptionHandler.class, SecurityConfig.class})
+@Import({GlobalExceptionHandler.class, SecurityConfig.class,
+         com.viwe.task_management_system.security.JwtAuthenticationEntryPoint.class})
 class AuthControllerTest {
 
     @Autowired
@@ -43,10 +44,8 @@ class AuthControllerTest {
 
     // ── Required beans for SecurityConfig ────────────────────────────────────
     // SecurityConfig depends on JwtAuthenticationFilter and UserDetailsService.
-    // In a @WebMvcTest slice these must be provided as mocks.
-    @MockitoBean
-    private com.viwe.task_management_system.security.JwtAuthenticationFilter jwtAuthenticationFilter;
-
+    // The real JwtAuthenticationFilter and JwtAuthenticationEntryPoint are used
+    // so auth rejections produce genuine 401 responses.
     @MockitoBean
     private org.springframework.security.core.userdetails.UserDetailsService userDetailsService;
 
