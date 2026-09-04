@@ -40,3 +40,10 @@ out/
 .env
 .env.local
 *.pem
+
+### Local developer overrides ─────────────────────────────────────────────────
+# application-local.properties lets a developer override any property without
+# touching tracked files.  Spring Boot loads it automatically when it exists.
+# Create it with: touch src/main/resources/application-local.properties
+application-local.properties
+application-*.local.properties

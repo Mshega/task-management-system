@@ -1,0 +1,57 @@
+---
+# ────────────────────────────────────────────────────────────────────────────
+# Task Management System — Local Development Services
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Usage:
+#   docker-compose up -d       # start MySQL in the background
+#   docker-compose down        # stop containers (data volume preserved)
+#   docker-compose down -v     # stop containers AND delete data volume
+#   docker-compose logs -f db  # tail MySQL logs
+#
+# The credentials here match the defaults in application-dev.properties and
+# .env.example so `docker-compose up -d` works without any extra config.
+#
+# The application itself is NOT in this file — run it via:
+#   ./gradlew bootRun --args='--spring.profiles.active=dev'
+# or from your IDE with SPRING_PROFILES_ACTIVE=dev.
+# ────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  db:
+    image: mysql:8.4
+    container_name: task-management-db
+    restart: unless-stopped
+
+    environment:
+      MYSQL_DATABASE: task_management_db
+      MYSQL_USER: taskuser
+      MYSQL_PASSWORD: taskpassword
+      # Root password is set so MySQL starts cleanly.
+      # Root is NOT used by the application — taskuser is.
+      MYSQL_ROOT_PASSWORD: rootpassword_local_only
+
+    ports:
+      # Expose MySQL on the standard local port so the application (running
+      # outside Docker) can connect via localhost:3306.
+      - "3306:3306"
+
+    volumes:
+      # Named volume preserves data across `docker-compose down` restarts.
+      - mysql_data:/var/lib/mysql
+      # Optional: place any *.sql init scripts in ./docker/mysql/init/ and
+      # they will run once when the container is first created.
+      # - ./docker/mysql/init:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "taskuser", "--password=taskpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  mysql_data:
+    driver: local

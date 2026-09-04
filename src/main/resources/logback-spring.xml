@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for Task Management System.
+
+  Profile-aware behaviour:
+    dev  (or no profile) → coloured console output, human-readable pattern.
+    prod                 → structured JSON to stdout for log aggregators.
+
+  Security guarantees:
+    • The Authorization header is NEVER logged by any appender or filter.
+    • Passwords, tokens, and secrets must never appear in log messages.
+      Application code is responsible for not passing sensitive values to
+      log statements — this file provides the structural foundation.
+    • SQL bind parameters are suppressed in all profiles except dev
+      (controlled via logging.level.org.hibernate.orm.jdbc.bind in profiles).
+-->
+<configuration scan="false">
+
+  <!-- ── Properties ─────────────────────────────────────────────────────── -->
+  <springProperty name="appName"  source="spring.application.name"
+                  defaultValue="task-management-system"/>
+
+  <!-- ── Appenders ──────────────────────────────────────────────────────── -->
+
+  <!--
+    CONSOLE_PLAIN — human-readable output for local development.
+    Active for the "dev" springProfile (and when no profile is set).
+  -->
+  <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!--
+    CONSOLE_JSON — structured JSON to stdout for production.
+    Each log event is a single-line JSON object parseable by Logstash,
+    Fluentd, Google Cloud Logging, AWS CloudWatch Logs, etc.
+
+    Active for the "prod" springProfile.
+
+    Fields emitted per event:
+      timestamp  — ISO-8601 UTC
+      level      — TRACE/DEBUG/INFO/WARN/ERROR
+      thread     — thread name
+      logger     — logger name (class)
+      message    — log message
+      application — spring.application.name
+      pid        — process ID
+      exception  — stack trace, if present
+  -->
+  <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <!--
+        Hand-rolled JSON pattern rather than a third-party encoder so there
+        is no additional runtime dependency.  For a production project consider
+        logstash-logback-encoder for richer structured logging.
+      -->
+      <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","thread":"%thread","logger":"%logger{50}","message":"%message","application":"${appName}","pid":"${PID:- }"%replace(",%ex{full}"){'^\,$',''}  }%n</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!-- ── Profile-specific root configuration ────────────────────────────── -->
+
+  <!-- dev profile: plain console, more verbose -->
+  <springProfile name="dev">
+    <root level="INFO">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+  </springProfile>
+
+  <!-- prod profile: JSON console, minimal noise -->
+  <springProfile name="prod">
+    <root level="WARN">
+      <appender-ref ref="CONSOLE_JSON"/>
+    </root>
+    <!-- Application code stays at INFO in prod -->
+    <logger name="com.viwe.task_management_system" level="INFO" additivity="false">
+      <appender-ref ref="CONSOLE_JSON"/>
+    </logger>
+    <!-- Suppress Hibernate SQL entirely in prod -->
+    <logger name="org.hibernate.SQL"              level="OFF"/>
+    <logger name="org.hibernate.orm.jdbc.bind"    level="OFF"/>
+  </springProfile>
+
+  <!-- test profile: plain console, WARN root, app at INFO -->
+  <springProfile name="test">
+    <root level="WARN">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+    <logger name="com.viwe.task_management_system" level="INFO" additivity="false">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </logger>
+  </springProfile>
+
+  <!-- Default (no profile active): same as dev -->
+  <springProfile name="!dev &amp; !prod &amp; !test">
+    <root level="INFO">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+    <logger name="com.viwe.task_management_system" level="DEBUG" additivity="false">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </logger>
+  </springProfile>
+
+</configuration>
